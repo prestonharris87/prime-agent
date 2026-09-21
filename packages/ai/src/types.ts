@@ -199,6 +199,10 @@ export interface Usage {
 		cacheWrite: number;
 		total: number;
 	};
+	/** The provider's usage object VERBATIM, beside the projection above — every
+	 * key the vendor sent under its own name (a billed amount such as
+	 * `cost_in_usd_ticks` included). Absent when the adapter did not carry it. */
+	vendorUsage?: Record<string, unknown>;
 }
 
 export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";

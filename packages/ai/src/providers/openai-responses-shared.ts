@@ -527,7 +527,6 @@ export async function processResponsesStream<TApi extends Api>(
 					// host can read the provider's price instead of the catalog's. `null`
 					// downstream means absent, never 0.
 					vendorUsage: response.usage,
-
 				};
 			}
 			calculateCost(model, output.usage);
