@@ -521,6 +521,13 @@ export async function processResponsesStream<TApi extends Api>(
 					cacheWrite: 0,
 					totalTokens: response.usage.total_tokens || 0,
 					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					// The vendor's own usage object, carried RAW and unrenamed beside the six
+					// projected token fields: every key the provider sent stays under its own
+					// name (a billed-amount key such as `cost_in_usd_ticks` included), so a
+					// host can read the provider's price instead of the catalog's. `null`
+					// downstream means absent, never 0.
+					vendorUsage: response.usage,
+
 				};
 			}
 			calculateCost(model, output.usage);
