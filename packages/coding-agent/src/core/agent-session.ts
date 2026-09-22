@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
+import { LAUNCHER_STAMP_ENV, launcherStampDir, mintChildLauncherStamp } from "./launcher-stamp.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -10680,7 +10681,46 @@ export class AgentSession {
 			env.RLM_HARNESS_STATE_DIR = this._localHarnessStateDir() ?? getLocalHarnessStateDir(rlmSessionDir)!;
 		}
 		this._addWebsearchKeyEnv(env);
+		this._addChildLauncherStampEnv(env);
 		return env;
+	}
+
+	// A LAUNCHER STAMPS THE SESSION IT SPAWNS, and for an rlm.spawn child that
+	// launcher is this process. Before this, a depth-N child's kernel inherited
+	// the hosting process's AISDLC_LAUNCHER_STAMP — the LEAD's identity, class
+	// and seal key (measured at c4a7590fd). Now a child whose lineage is stamped
+	// gets its OWN stamp (launcher-stamp.ts: identity helper:<name>@<parent>,
+	// the parent's scope, this daemon's seal key) and the kernel env names THAT
+	// file — the kernel spawn spreads process.env first and this map second, so
+	// the child's value wins. An unstamped lineage (no variable in the process
+	// env: an operator's shell, a drill) mints nothing and stays unstamped, named
+	// by the reader; a root (depth 0) keeps what its launcher exported. A parent
+	// stamp that is named and unreadable is REFUSED downstream by name: the child
+	// is pointed at a file that does not exist, never at the parent's, and never
+	// at nothing.
+	private _addChildLauncherStampEnv(env: Record<string, string>): void {
+		if (this._rlmDepth <= 0) return;
+		const parentStampFile = process.env[LAUNCHER_STAMP_ENV]?.trim();
+		if (!parentStampFile) return;
+		const stateDir = getGlobalHarnessStateDir(this._agentDir);
+		try {
+			const minted = mintChildLauncherStamp({
+				parentStampFile,
+				stateDir,
+				sessionId: this.sessionId,
+				childName: this.sessionName,
+				depth: this._rlmDepth,
+			});
+			env[LAUNCHER_STAMP_ENV] = minted.file;
+		} catch (error) {
+			env[LAUNCHER_STAMP_ENV] = join(launcherStampDir(stateDir), `${this.sessionId}.REFUSED.json`);
+			this._logChildLauncherStampRefusal(parentStampFile, error);
+		}
+	}
+
+	private _logChildLauncherStampRefusal(parentStampFile: string, error: unknown): void {
+		const reason = error instanceof Error ? error.message : String(error);
+		process.stderr.write(`launcher stamp: REFUSED for depth-${this._rlmDepth} child ${this.sessionId} — parent stamp ${parentStampFile}: ${reason}; the child kernel is pointed at a file that does not exist, so every reader refuses it by name (never unstamped)\n`);
 	}
 
 	private _addWebsearchKeyEnv(env: Record<string, string>): void {
