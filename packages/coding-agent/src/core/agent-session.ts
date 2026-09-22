@@ -537,6 +537,8 @@ export interface AgentSessionConfig {
 	rlmSessionDir?: string;
 	rlmParentNodeId?: string;
 	rlmParentAgent?: string;
+	/** The rlm.spawn name a child was created under — known at construction, before setSessionName runs; the child's launcher stamp is minted from it. */
+	rlmSessionName?: string;
 	semanticParentSessionId?: string;
 	semanticSpawnedByRequestId?: string;
 	subagentRuntimeHost?: SubagentRuntimeHost;
@@ -1538,6 +1540,7 @@ export class AgentSession {
 	private readonly _semanticEdges: SemanticEdgeRecorder;
 	private _rlmParentNodeId?: string;
 	private _rlmParentAgent?: string;
+	private _rlmSessionName?: string;
 	private _repliedToParentSinceTask: boolean | undefined;
 	private _parentReplyCount = 0;
 	private _subagentRuntimeHost?: SubagentRuntimeHost;
@@ -1650,6 +1653,7 @@ export class AgentSession {
 		this._rlmSessionDir = config.rlmSessionDir;
 		this._rlmParentNodeId = config.rlmParentNodeId;
 		this._rlmParentAgent = config.rlmParentAgent;
+		this._rlmSessionName = config.rlmSessionName;
 		this._semanticEdges = new SemanticEdgeRecorder({
 			ledgerPath: semanticEdgeLedgerPath({
 				rlmSessionDir: this._rlmSessionDir,
@@ -10708,7 +10712,7 @@ export class AgentSession {
 				parentStampFile,
 				stateDir,
 				sessionId: this.sessionId,
-				childName: this.sessionName,
+				childName: this.sessionName ?? this._rlmSessionName,
 				depth: this._rlmDepth,
 			});
 			env[LAUNCHER_STAMP_ENV] = minted.file;
@@ -10908,6 +10912,7 @@ export class AgentSession {
 			rlmSessionDir: options.sessionDir,
 			rlmParentNodeId: options.rlmParentNodeId,
 			rlmParentAgent: options.parentSession.sessionName ?? options.parentSession.sessionId,
+			rlmSessionName: options.sessionName,
 			semanticParentSessionId: options.parentSession.sessionId,
 			semanticSpawnedByRequestId: options.spawnedByRequestId,
 			sessionStartEvent: { type: "session_start", reason: "startup" },
