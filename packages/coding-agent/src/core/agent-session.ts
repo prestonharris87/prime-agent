@@ -10712,7 +10712,7 @@ export class AgentSession {
 				parentStampFile,
 				stateDir,
 				sessionId: this.sessionId,
-				childName: this.sessionName ?? this._rlmSessionName,
+				childName: this._rlmSessionName ?? this.sessionName,
 				depth: this._rlmDepth,
 			});
 			env[LAUNCHER_STAMP_ENV] = minted.file;
