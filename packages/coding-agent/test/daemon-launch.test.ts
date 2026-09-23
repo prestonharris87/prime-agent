@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	DAEMON_SPAWN_ENV,
 	ensureInteractiveDaemonRunning,
 	probeDaemonVersion,
 	probeRunningDaemonSessions,
@@ -382,6 +383,58 @@ describe("ensureInteractiveDaemonRunning", () => {
 		await expect(ensureInteractiveDaemonRunning(daemon.socketPath)).resolves.toBeUndefined();
 		expect(commands).toContain("list");
 		expect(commands).not.toContain("shutdown");
+	});
+
+	it("never launches a daemon when the host owns the socket (PRIME_AGENT_DAEMON_SPAWN=refuse), and does without it", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "pa-launch-spawn-refuse-"));
+		const entrypoint = join(dir, "would-be-daemon.mjs");
+		const marker = join(dir, "spawned");
+		const socketPath = join(dir, "d.sock");
+		const originalAgentDir = process.env[ENV_AGENT_DIR];
+		const originalSpawn = process.env[DAEMON_SPAWN_ENV];
+		process.env[ENV_AGENT_DIR] = join(dir, "agent");
+		writeFileSync(entrypoint, `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "1"); process.exit(7);`);
+		const originalEntrypoint = process.argv[1]!;
+		process.argv[1] = entrypoint;
+		try {
+			process.env[DAEMON_SPAWN_ENV] = "refuse";
+			await expect(ensureInteractiveDaemonRunning(socketPath)).rejects.toThrow(
+				/is not running, and PRIME_AGENT_DAEMON_SPAWN=refuse forbids this client from launching one/,
+			);
+			await new Promise((r) => setTimeout(r, 300));
+			expect(existsSync(marker)).toBe(false);
+			// the control, same socket and entrypoint: without the seat the client DOES launch
+			delete process.env[DAEMON_SPAWN_ENV];
+			await expect(ensureInteractiveDaemonRunning(socketPath)).rejects.toThrow(/exited during startup \(code 7\)/);
+			expect(existsSync(marker)).toBe(true);
+		} finally {
+			process.argv[1] = originalEntrypoint;
+			if (originalAgentDir === undefined) delete process.env[ENV_AGENT_DIR];
+			else process.env[ENV_AGENT_DIR] = originalAgentDir;
+			if (originalSpawn === undefined) delete process.env[DAEMON_SPAWN_ENV];
+			else process.env[DAEMON_SPAWN_ENV] = originalSpawn;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("refuses to replace a stale daemon the host owns under PRIME_AGENT_DAEMON_SPAWN=refuse", async () => {
+		const commands: string[] = [];
+		const daemon = await startFakeDaemon({
+			protocolVersion: DAEMON_PROTOCOL_VERSION,
+			appVersion: VERSION,
+			schemaId: "stale-schema",
+			onCommand: (command) => commands.push(command.type),
+		});
+		cleanups.push(daemon.close);
+		const originalSpawn = process.env[DAEMON_SPAWN_ENV];
+		process.env[DAEMON_SPAWN_ENV] = "refuse";
+		try {
+			await expect(ensureInteractiveDaemonRunning(daemon.socketPath)).rejects.toThrow(/is a stale version, and PRIME_AGENT_DAEMON_SPAWN=refuse/);
+			expect(commands).not.toContain("shutdown");
+		} finally {
+			if (originalSpawn === undefined) delete process.env[DAEMON_SPAWN_ENV];
+			else process.env[DAEMON_SPAWN_ENV] = originalSpawn;
+		}
 	});
 
 	it("fails fast with the daemon log tail when the spawned daemon exits during startup", async () => {

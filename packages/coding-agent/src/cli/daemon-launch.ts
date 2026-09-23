@@ -33,6 +33,31 @@ import {
 import { createCliSubprocessEnv, formatCurrentCliCommand } from "./subprocess-launch.js";
 
 const DAEMON_STARTUP_TIMEOUT_MS = 30_000;
+
+/**
+ * A host that OWNS the supervisor on a socket (a release VM runs it under its
+ * own transient unit) sets `PRIME_AGENT_DAEMON_SPAWN=refuse` on the client it
+ * launches. The client then never spawns (or replaces) a daemon of its own —
+ * not at startup and not in its reconnect recovery — and fails by name
+ * instead. Measured without it: the unit was stopped, the attached client's
+ * recovery launched a DETACHED supervisor on the same socket within 0.6 s,
+ * inside the host's own process group and outside the unit's env, and the
+ * host never saw the session end, so nothing re-staffed the unit.
+ */
+export const DAEMON_SPAWN_ENV = "PRIME_AGENT_DAEMON_SPAWN";
+
+export function daemonSpawnRefused(env: NodeJS.ProcessEnv = process.env): boolean {
+	return (env[DAEMON_SPAWN_ENV] ?? "").trim().toLowerCase() === "refuse";
+}
+
+export class DaemonSpawnRefusedError extends Error {
+	constructor(socketPath: string, state: "absent" | "stale") {
+		super(
+			`Prime Agent daemon on ${socketPath} is ${state === "stale" ? "a stale version" : "not running"}, and ${DAEMON_SPAWN_ENV}=refuse forbids this client from launching one: the host owns this socket's supervisor, so the host must start it again.`,
+		);
+		this.name = "DaemonSpawnRefusedError";
+	}
+}
 const DAEMON_STARTUP_LOG_TAIL_BYTES = 4 * 1024;
 const DAEMON_STARTUP_EXIT_GRACE_MS = 2_000;
 
@@ -372,6 +397,11 @@ ${formatCurrentCliCommand(["shutdown", "--force"])}
 
 Then retry the original command.`,
 		);
+	}
+	if (daemonSpawnRefused()) {
+		const refused = new DaemonSpawnRefusedError(socketPath, probe.status === "stale" ? "stale" : "absent");
+		logDaemonLaunch(`REFUSED: ${refused.message}`);
+		throw refused;
 	}
 	if (probe.status === "stale") {
 		const disposition = await shutdownStaleDaemonIfNotBusy(socketPath);
