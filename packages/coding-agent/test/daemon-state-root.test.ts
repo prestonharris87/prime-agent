@@ -133,3 +133,43 @@ describe.runIf(process.platform !== "win32")("daemon state root scoping", () => 
 		}
 	});
 });
+
+// The win32 arm is pure string + registry logic, so it runs on every platform
+// through the platform parameter. It used to be `() => true`: every pipe on the
+// machine was "ours", which only stayed harmless while win32 discovery found no
+// listeners at all.
+describe("daemon state root scoping (win32 arm)", () => {
+	const pipe = (name: string) => `\\\\.\\pipe\\${name}`;
+	const winRoot = (root: DaemonStateRoot): DaemonStateRoot => ({
+		...root,
+		defaultSocketPath: pipe("prime-agent-daemon"),
+	});
+
+	it("claims the default pipe, case-insensitively", () => {
+		const { root } = createRoot();
+		const belongsToStateRoot = createDaemonStateRootMatcher(winRoot(root), "win32");
+		expect(belongsToStateRoot(pipe("prime-agent-daemon"))).toBe(true);
+		expect(belongsToStateRoot(pipe("PRIME-AGENT-DAEMON"))).toBe(true);
+	});
+
+	it("claims a pipe registered under our agent dir and disowns one registered under another", () => {
+		const { root, base } = createRoot();
+		const otherAgentDir = join(base, "other-agent");
+		const registry: Record<string, string[]> = {
+			[root.agentDir]: [pipe("Helm-Prime-Ours")],
+			[otherAgentDir]: [pipe("helm-prime-theirs")],
+		};
+		const belongsToStateRoot = createDaemonStateRootMatcher(
+			winRoot(root),
+			"win32",
+			(agentDir) => registry[agentDir] ?? [],
+		);
+		expect(belongsToStateRoot(pipe("helm-prime-ours"))).toBe(true);
+		expect(belongsToStateRoot(pipe("helm-prime-theirs"))).toBe(false);
+	});
+
+	it("disowns an unregistered pipe (the pre-fix matcher claimed it)", () => {
+		const { root } = createRoot();
+		expect(createDaemonStateRootMatcher(winRoot(root), "win32", () => [])(pipe("stranger"))).toBe(false);
+	});
+});

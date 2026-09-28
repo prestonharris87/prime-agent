@@ -581,6 +581,48 @@ export function listDaemonSupervisorSocketPathsForAgentDir(
 	return socketPaths;
 }
 
+/** One registered supervisor as daemon discovery needs it: who, where, for which agent dir. */
+export interface DaemonSupervisorDiscoveryRecord {
+	pid: number;
+	processStartId?: string;
+	socketPath: string;
+	agentDir: string;
+}
+
+/**
+ * Every supervisor the registry records, read-only and lock-free exactly like
+ * listDaemonSupervisorSocketPathsForAgentDir. Windows has no OS listener table
+ * that maps a named pipe to its server pid (`ss -lxp` / `lsof` have no win32
+ * counterpart), so on win32 this registry IS the listener source for daemon
+ * discovery: each supervisor writes its own record (pid, pipe, agent dir) and
+ * renews it while it lives. The registry dir follows HOME (USERPROFILE on
+ * win32) and the registry-dir override, so the answer is already scoped to
+ * this user's state; the caller still filters by agent dir.
+ */
+export function listDaemonSupervisorOwnersForDiscovery(
+	registryDir?: string,
+	legacyRegistryDir: string | undefined = registryDir === undefined ? legacyDaemonSupervisorRegistryDir() : undefined,
+): DaemonSupervisorDiscoveryRecord[] {
+	const directories = ownerDirectoriesForDiscovery(registryDir ?? defaultDaemonSupervisorRegistryDir());
+	if (legacyRegistryDir) {
+		directories.push(...ownerDirectoriesForDiscovery(legacyRegistryDir));
+	}
+	const records: DaemonSupervisorDiscoveryRecord[] = [];
+	for (const directory of directories) {
+		const owner = readOwnerRecord(directory);
+		if (!owner) {
+			continue;
+		}
+		records.push({
+			pid: owner.pid,
+			...(owner.processStartId !== undefined ? { processStartId: owner.processStartId } : {}),
+			socketPath: normalizeSocketPath(owner.socketPath),
+			agentDir: owner.agentDir,
+		});
+	}
+	return records;
+}
+
 /** Non-mutating registry listing: discovery must never reclaim abandoned directories. */
 function ownerDirectoriesForDiscovery(registryDir: string): string[] {
 	try {

@@ -17,7 +17,10 @@ import {
 } from "../modes/daemon/daemon-protocol.js";
 import { defaultDaemonSocketDir, defaultDaemonSocketPath, normalizeSocketPath } from "../modes/daemon/daemon-socket.js";
 import { createDaemonStateRootMatcher } from "../modes/daemon/daemon-state-root.js";
-import { acquireDaemonShutdownAdmission } from "../modes/daemon/daemon-supervisor-ownership.js";
+import {
+	acquireDaemonShutdownAdmission,
+	listDaemonSupervisorOwnersForDiscovery,
+} from "../modes/daemon/daemon-supervisor-ownership.js";
 import type { DaemonWorkerDescriptor } from "../modes/daemon/daemon-worker-protocol.js";
 import {
 	isProcessAlive,
@@ -193,7 +196,7 @@ function scanListeningDaemons(): DiscoveredDaemonProcess[] {
 
 function scanAllListeningDaemons(): DiscoveredDaemonProcess[] {
 	if (process.platform === "win32") {
-		return [];
+		return scanWindowsRegisteredDaemons(defaultWindowsDaemonScanSources());
 	}
 	const ss = spawnSyncHidden("ss", ["-lxp"], { encoding: "utf8" });
 	if (!ss.error && ss.status === 0 && typeof ss.stdout === "string") {
@@ -215,6 +218,71 @@ function scanAllListeningDaemons(): DiscoveredDaemonProcess[] {
 		}
 	}
 	return enrichUptimes(mergeDiscoveredDaemonProcesses(byName, byPid));
+}
+
+/** Where the win32 listener scan reads from; injected so the logic is testable on every platform. */
+export interface WindowsDaemonScanSources {
+	/** Every supervisor the (HOME-scoped) supervisor registry records. */
+	owners: () => ReadonlyArray<{ pid: number; socketPath: string }>;
+	/** Lowercased names in the `\\.\pipe\` namespace, or undefined when the namespace cannot be listed. */
+	pipeNames: () => ReadonlySet<string> | undefined;
+	/** True while a process with this pid exists. */
+	pidExists: (pid: number) => boolean;
+}
+
+const WINDOWS_PIPE_PREFIX = "\\\\.\\pipe\\";
+
+/**
+ * The win32 listener scan. Windows has no `ss -lxp` / `lsof`: nothing maps a
+ * named pipe back to the pid serving it. Before this, win32 discovery returned
+ * [] here and saw only tracked WORKERS, so a supervisor whose worker had exited
+ * (a client EOF, a crash, the crash auto-respawn) was invisible to `daemon ps`,
+ * `status`, `doctor`, `reap` and `shutdown` and accumulated forever — measured
+ * on Windows Server 2022: 5 supervisor + catalog pairs (10 node.exe) resident
+ * after 5 scenarios while `status --json` printed `[]`.
+ *
+ * The supervisor registry is the listener source instead: every supervisor
+ * records its own pid and pipe and renews the record while it lives. A record
+ * counts as a listener only while its pid exists AND its pipe is present in
+ * the pipe namespace (a listed pipe has a live server instance); when the
+ * namespace cannot be listed the pid check alone decides. Worker pipes are
+ * never supervisors. Identity (process start id) is verified again by every
+ * caller that signals, so a recycled pid is never killed on this answer.
+ */
+export function scanWindowsRegisteredDaemons(sources: WindowsDaemonScanSources): DiscoveredDaemonProcess[] {
+	const pipes = sources.pipeNames();
+	const seen = new Set<string>();
+	const daemons: DiscoveredDaemonProcess[] = [];
+	for (const owner of sources.owners()) {
+		const socketPath = owner.socketPath.toLowerCase();
+		if (!socketPath.startsWith(WINDOWS_PIPE_PREFIX) || isWorkerSocketPath(socketPath)) {
+			continue;
+		}
+		if (pipes && !pipes.has(socketPath.slice(WINDOWS_PIPE_PREFIX.length))) {
+			continue;
+		}
+		const key = `${owner.pid}:${socketPath}`;
+		if (seen.has(key) || !sources.pidExists(owner.pid)) {
+			continue;
+		}
+		seen.add(key);
+		daemons.push({ pid: owner.pid, socketPath });
+	}
+	return daemons;
+}
+
+function defaultWindowsDaemonScanSources(): WindowsDaemonScanSources {
+	return {
+		owners: () => listDaemonSupervisorOwnersForDiscovery(),
+		pipeNames: () => {
+			try {
+				return new Set(readdirSync(WINDOWS_PIPE_PREFIX).map((name) => name.toLowerCase()));
+			} catch {
+				return undefined;
+			}
+		},
+		pidExists: (pid) => processIdExists(pid),
+	};
 }
 
 function isDaemonProcessListening(pid: number, socketPath: string): boolean {

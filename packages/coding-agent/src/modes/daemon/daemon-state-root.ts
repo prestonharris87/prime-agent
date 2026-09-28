@@ -53,10 +53,11 @@ export function currentDaemonStateRoot(): DaemonStateRoot {
  */
 export function createDaemonStateRootMatcher(
 	root: DaemonStateRoot = currentDaemonStateRoot(),
+	platform: NodeJS.Platform = process.platform,
+	registeredSocketPathsForAgentDir: (agentDir: string) => string[] = listDaemonSupervisorSocketPathsForAgentDir,
 ): (socketPath: string) => boolean {
-	if (process.platform === "win32") {
-		// Windows daemons share one named pipe per machine, so there is nothing to scope.
-		return () => true;
+	if (platform === "win32") {
+		return createWindowsDaemonStateRootMatcher(root, registeredSocketPathsForAgentDir);
 	}
 	const socketDir = resolve(root.socketDir);
 	const agentDir = resolve(root.agentDir);
@@ -68,6 +69,35 @@ export function createDaemonStateRootMatcher(
 			return true;
 		}
 		registeredSocketPaths ??= new Set(listDaemonSupervisorSocketPathsForAgentDir(root.agentDir));
+		return registeredSocketPaths.has(normalized);
+	};
+}
+
+/**
+ * The win32 arm. Named pipes live in one machine-wide namespace (`\\.\pipe\`),
+ * so neither the socket-dir rule nor the agent-dir rule can place a pipe in a
+ * root: a daemon is ours when it is the default pipe, or when the supervisor
+ * registry (which follows HOME / USERPROFILE) records it under our agent dir.
+ * Pipe names are case-insensitive, so both sides compare lowercased. This
+ * used to be `() => true`, which was harmless only while win32 discovery found
+ * no listeners at all (see scanAllListeningDaemons); a matcher that claims
+ * every pipe on the machine would let `shutdown --force` stop another HOME's
+ * live sessions once discovery can see them.
+ */
+function createWindowsDaemonStateRootMatcher(
+	root: DaemonStateRoot,
+	registeredSocketPathsForAgentDir: (agentDir: string) => string[],
+): (socketPath: string) => boolean {
+	const defaultPipe = root.defaultSocketPath.toLowerCase();
+	let registeredSocketPaths: Set<string> | undefined;
+	return (socketPath: string): boolean => {
+		const normalized = socketPath.toLowerCase();
+		if (normalized === defaultPipe) {
+			return true;
+		}
+		registeredSocketPaths ??= new Set(
+			registeredSocketPathsForAgentDir(root.agentDir).map((path) => path.toLowerCase()),
+		);
 		return registeredSocketPaths.has(normalized);
 	};
 }

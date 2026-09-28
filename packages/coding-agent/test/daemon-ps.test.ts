@@ -6,6 +6,7 @@ import {
 	planReap,
 	planShutdownAll,
 	planShutdownConfirmation,
+	scanWindowsRegisteredDaemons,
 	verifyHelloSupervisorPid,
 } from "../src/cli/daemon-ps.js";
 import { getProcessStartId } from "../src/core/session-lease.js";
@@ -151,3 +152,83 @@ function makeDaemon(options: Partial<DaemonInfo> & { socketPath: string; status:
 		...options,
 	};
 }
+
+// win32 discovery (B1 of the Windows harness spike): the supervisor registry is
+// the listener source, gated on the pipe being present and the pid existing.
+describe("scanWindowsRegisteredDaemons", () => {
+	const pipe = (name: string) => `\\\\.\\pipe\\${name}`;
+	const sources = (
+		owners: Array<{ pid: number; socketPath: string }>,
+		pipes: string[] | undefined,
+		live: number[],
+	) => ({
+		owners: () => owners,
+		pipeNames: () => (pipes ? new Set(pipes.map((name) => name.toLowerCase())) : undefined),
+		pidExists: (pid: number) => live.includes(pid),
+	});
+
+	it("finds every registered supervisor whose pipe is listed and whose pid exists", () => {
+		const found = scanWindowsRegisteredDaemons(
+			sources(
+				[
+					{ pid: 101, socketPath: pipe("prime-spike-a") },
+					{ pid: 102, socketPath: pipe("Helm-Prime-Lead") },
+					{ pid: 103, socketPath: pipe("prime-agent-daemon") },
+				],
+				["prime-spike-a", "helm-prime-lead", "prime-agent-daemon", "unrelated"],
+				[101, 102, 103],
+			),
+		);
+		expect(found).toEqual([
+			{ pid: 101, socketPath: pipe("prime-spike-a") },
+			{ pid: 102, socketPath: pipe("helm-prime-lead") },
+			{ pid: 103, socketPath: pipe("prime-agent-daemon") },
+		]);
+	});
+
+	it("drops a record whose pipe is gone or whose pid no longer exists", () => {
+		const found = scanWindowsRegisteredDaemons(
+			sources(
+				[
+					{ pid: 201, socketPath: pipe("gone-pipe") },
+					{ pid: 202, socketPath: pipe("dead-pid") },
+					{ pid: 203, socketPath: pipe("live") },
+				],
+				["dead-pid", "live"],
+				[201, 203],
+			),
+		);
+		expect(found).toEqual([{ pid: 203, socketPath: pipe("live") }]);
+	});
+
+	it("falls back to the pid check when the pipe namespace cannot be listed", () => {
+		const found = scanWindowsRegisteredDaemons(
+			sources(
+				[
+					{ pid: 301, socketPath: pipe("a") },
+					{ pid: 302, socketPath: pipe("b") },
+				],
+				undefined,
+				[302],
+			),
+		);
+		expect(found).toEqual([{ pid: 302, socketPath: pipe("b") }]);
+	});
+
+	it("never reports a worker pipe, a non-pipe path, or the same listener twice", () => {
+		const worker = pipe("prime-agent-worker-98ed5cb228d2-5b1d3aeb91ee");
+		const found = scanWindowsRegisteredDaemons(
+			sources(
+				[
+					{ pid: 401, socketPath: worker },
+					{ pid: 402, socketPath: "/tmp/prime-agent-0/daemon.sock" },
+					{ pid: 403, socketPath: pipe("x") },
+					{ pid: 403, socketPath: pipe("X") },
+				],
+				["prime-agent-worker-98ed5cb228d2-5b1d3aeb91ee", "x"],
+				[401, 402, 403],
+			),
+		);
+		expect(found).toEqual([{ pid: 403, socketPath: pipe("x") }]);
+	});
+});
