@@ -1125,6 +1125,12 @@ function parseChunkUsage(
 		cacheWrite: cacheWriteTokens,
 		totalTokens: input + outputTokens + cacheReadTokens + cacheWriteTokens,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		// The vendor's own usage object, carried RAW and unrenamed beside the projection
+		// (the chat-completions twin of the Responses-API capture in
+		// openai-responses-shared.ts): a billed-amount key such as xAI's
+		// `cost_in_usd_ticks` survives under its own name, so a host reads the
+		// provider's price instead of the catalog's. Absent downstream means absent, never 0.
+		vendorUsage: rawUsage,
 	};
 	calculateCost(model, usage, cacheWriteCost === undefined ? undefined : { cacheWrite: cacheWriteCost });
 	return usage;

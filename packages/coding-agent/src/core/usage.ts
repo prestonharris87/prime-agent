@@ -31,7 +31,41 @@ export function emptyUsage(): Usage {
 	};
 }
 
+/** The vendor-billed amount key (xAI: 1 USD = 10^10 ticks). Folded, never converted. */
+const VENDOR_TICKS_KEY = "cost_in_usd_ticks";
+/** Tokens of folded usages that carried NO vendor bill, kept beside the folded ticks so a
+ * reader can tell a complete bill from a partial one (a partial bill is never a total). */
+const VENDOR_UNBILLED_KEY = "unbilled_tokens";
+
+function usageTokens(u: Usage): number {
+	return u.input + u.output + u.cacheRead + u.cacheWrite;
+}
+
+function vendorNum(u: Usage, key: string): number | undefined {
+	const v = (u.vendorUsage as Record<string, unknown> | undefined)?.[key];
+	return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+/** Fold `usage`'s vendor bill into `total` BEFORE the token fields move. A fold of usages
+ * that carry `vendorUsage.cost_in_usd_ticks` (a parent turn plus its children, a helper
+ * bucket) used to drop the bill: only the projection was summed, so a host could price the
+ * aggregate from the catalog alone. The folded object is NEW (never a mutation of a
+ * provider's raw object) and holds only the summed ticks and the unbilled-token count. */
+function foldVendorBill(total: Usage, usage: Usage, sign: 1 | -1): void {
+	const have = vendorNum(total, VENDOR_TICKS_KEY);
+	const add = vendorNum(usage, VENDOR_TICKS_KEY);
+	if (have === undefined && add === undefined) return;
+	if (sign === -1 && have === undefined) return;
+	const haveUnbilled = have === undefined ? usageTokens(total) : (vendorNum(total, VENDOR_UNBILLED_KEY) ?? 0);
+	const addUnbilled = add === undefined ? usageTokens(usage) : (vendorNum(usage, VENDOR_UNBILLED_KEY) ?? 0);
+	total.vendorUsage = {
+		[VENDOR_TICKS_KEY]: Math.max(0, (have ?? 0) + sign * (add ?? 0)),
+		[VENDOR_UNBILLED_KEY]: Math.max(0, haveUnbilled + sign * addUnbilled),
+	};
+}
+
 export function addAssistantUsage(total: Usage, usage: Usage): void {
+	foldVendorBill(total, usage, 1);
 	total.input += usage.input;
 	total.output += usage.output;
 	total.cacheRead += usage.cacheRead;
@@ -46,6 +80,7 @@ export function addAssistantUsage(total: Usage, usage: Usage): void {
 
 /** Remove a previously added usage, clamping at zero to absorb attribution drift. */
 export function subtractAssistantUsage(total: Usage, usage: Usage): void {
+	foldVendorBill(total, usage, -1);
 	total.input = Math.max(0, total.input - usage.input);
 	total.output = Math.max(0, total.output - usage.output);
 	total.cacheRead = Math.max(0, total.cacheRead - usage.cacheRead);
@@ -72,5 +107,7 @@ export function cloneUsage(usage: Usage): Usage {
 			cacheWrite: usage.cost.cacheWrite,
 			total: usage.cost.total,
 		},
+		// A clone keeps the vendor bill (a persisted `childUsage` is a clone).
+		...(usage.vendorUsage ? { vendorUsage: { ...usage.vendorUsage } } : {}),
 	};
 }
