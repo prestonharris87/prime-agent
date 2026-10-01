@@ -15,6 +15,9 @@ export const AGENT_MESSAGE_IMPORT_NAME = "agent_message";
 export const AGENT_MESSAGE_SOURCE = "agent_message";
 export const AGENT_MESSAGE_ID_PREFIX = "agentmsg_";
 export const AGENT_MESSAGE_RECEIVED_PREVIEW_LABEL = "Agent message received";
+/** Queue-preview label for an agent message whose sender is known:
+ * `Agent message from <sender>: <message>`. */
+export const AGENT_MESSAGE_FROM_PREVIEW_LABEL = "Agent message from";
 export const DEFAULT_AGENT_MESSAGE_MAX_CHARS = 16_384;
 export const DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION = 20;
 export const DEFAULT_AGENT_MESSAGE_RATE_LIMIT_CAPACITY = 3;
@@ -383,6 +386,24 @@ export function parseAgentSessionMessagePromptId(text: string): string | undefin
 
 export function isAgentSessionMessagePrompt(text: string): boolean {
 	return parseAgentSessionMessagePromptId(text) !== undefined;
+}
+
+/**
+ * The queued-message preview of an agent message. It names the sender with the
+ * header's grammar: `<relationship>:<sessionName>`, the relationship alone when
+ * the sender has no session name, or the bare session name when there is no
+ * relationship. It never shows a raw session id. With neither known, it is the
+ * anonymous `Agent message received: <message>`.
+ */
+export function createAgentSessionMessageQueuePreview(
+	details: Pick<AgentSessionMessageDetails, "message" | "from" | "fromRelationship">,
+): string {
+	const name = sanitizeMessageHeaderValue(details.from?.sessionName ?? "");
+	const relationship = details.fromRelationship;
+	const sender = relationship ? (name ? `${relationship}:${name}` : relationship) : name;
+	return sender
+		? `${AGENT_MESSAGE_FROM_PREVIEW_LABEL} ${sender}: ${details.message}`
+		: `${AGENT_MESSAGE_RECEIVED_PREVIEW_LABEL}: ${details.message}`;
 }
 
 export function createAgentSessionMessagePrompt(payload: AgentSessionMessagePayload): string {

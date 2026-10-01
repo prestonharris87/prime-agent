@@ -1,0 +1,1 @@
+- Changed the queue preview of an agent message to name its sender (`Agent message from child:<name>: <message>`; the relationship alone when the sender has no session name, never a raw session id). With no sender known it stays `Agent message received: <message>`.

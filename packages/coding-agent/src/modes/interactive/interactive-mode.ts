@@ -69,6 +69,7 @@ import {
 	VERSION,
 } from "../../config.js";
 import {
+	AGENT_MESSAGE_FROM_PREVIEW_LABEL,
 	AGENT_MESSAGE_RECEIVED_PREVIEW_LABEL,
 	isAgentSessionMessage,
 	startsAgentRun,
@@ -353,6 +354,7 @@ function isLabeledQueuedPreview(message: string): boolean {
 		message.startsWith(`${HEARTBEAT_PROMPT_PREVIEW_LABEL}: `) ||
 		message.startsWith(`${GOAL_CONTEXT_PREVIEW_LABEL}: `) ||
 		message.startsWith(`${AGENT_MESSAGE_RECEIVED_PREVIEW_LABEL}: `) ||
+		message.startsWith(`${AGENT_MESSAGE_FROM_PREVIEW_LABEL} `) ||
 		message.startsWith(`${ASYNC_BASH_COMPLETION_PREVIEW_LABEL}: `)
 	);
 }
