@@ -40,7 +40,6 @@ import { stripFrontmatter } from "../utils/frontmatter.js";
 import { sleep } from "../utils/sleep.js";
 import {
 	AGENT_MESSAGE_CUSTOM_TYPE,
-	AGENT_MESSAGE_RECEIVED_PREVIEW_LABEL,
 	AGENT_MESSAGE_SKILL_NAME,
 	type AgentFamilyCatalogEntry,
 	type AgentSessionMessage,
@@ -53,6 +52,7 @@ import {
 	assertAgentSessionNameAvailable,
 	assertDirectAgentMessageTarget,
 	createAgentMessageHostHandlers,
+	createAgentSessionMessageQueuePreview,
 	DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION,
 	formatAgentSessionNameUnavailable,
 	isAgentSessionMessage,
@@ -848,7 +848,7 @@ function queuedAgentMessagePreview(action: QueuedSessionAction): string {
 	const payload = action.payload;
 	if (payload.kind === "session_command") return payload.text;
 	if (payload.customMessage && isAgentSessionMessage(payload.customMessage)) {
-		return `${AGENT_MESSAGE_RECEIVED_PREVIEW_LABEL}: ${payload.customMessage.details.message}`;
+		return createAgentSessionMessageQueuePreview(payload.customMessage.details);
 	}
 	if (payload.customMessage?.customType === ASYNC_BASH_COMPLETION_CUSTOM_TYPE) {
 		const details = payload.customMessage.details as AsyncBashCompletionDetails | undefined;
