@@ -21,6 +21,17 @@
 // this process stamps seals with it; never the parent launcher's key, which the
 // child's document does not carry) — and hand the child's kernel THAT file.
 //
+// launcher-stamp/2 (the framework's seal service, lane prime-sealkey; owner
+// ruling 2026-10-01 "yes to fix the sealing key"): on a box where the seal
+// service is seated, the scope launcher mints its stamps as /2 — NO `seal_key`
+// (a key in a stamp is a key every agent reads; the service holds the box's
+// only one). A /2 PARENT gets a /2 CHILD with no key, and this daemon mints no
+// key file for it. A /1 parent (a box not yet seated, every dev box: the
+// TRANSITION) still gets the /1 child below, unchanged. Before this, a /2
+// parent was refused here ("schema is not launcher-stamp/1") and every helper
+// on a seated VM got the REFUSED path in agent-session.ts — the outage the
+// framework's ops/release-vm/fork-child-stamp-v2.test.sh pins.
+//
 // Byte-compatible with the python `mint`: the seven keys, hex seal key >= 16
 // bytes, mode 0600, tmp + rename. What it cannot do on a one-uid box is make
 // the parent's file unreadable BY PATH — the child's environment simply no
@@ -32,17 +43,20 @@ import { dirname, join } from "node:path";
 
 export const LAUNCHER_STAMP_ENV = "AISDLC_LAUNCHER_STAMP";
 export const LAUNCHER_STAMP_SCHEMA = "launcher-stamp/1";
+/** launcher-stamp/2: the seal service holds the key — a /2 stamp carries none. */
+export const LAUNCHER_STAMP_SCHEMA_V2 = "launcher-stamp/2";
 /** The `launcher` field every child stamp this harness mints carries. */
 export const LAUNCHER_STAMP_LAUNCHER = "prime-agent";
 /** The python reader refuses a seal key under 16 bytes; the python mint uses 32. */
 const SEAL_KEY_BYTES = 32;
 
 export interface LauncherStampDoc {
-	schema: typeof LAUNCHER_STAMP_SCHEMA;
+	schema: typeof LAUNCHER_STAMP_SCHEMA | typeof LAUNCHER_STAMP_SCHEMA_V2;
 	identity: string;
 	class: "agent" | "human";
 	scope: string;
-	seal_key: string;
+	/** /1 only — a /2 stamp carries no key. */
+	seal_key?: string;
 	issued: string;
 	launcher: string;
 }
@@ -51,7 +65,9 @@ export interface MintedChildStamp {
 	file: string;
 	identity: string;
 	scope: string;
-	sealKeyPath: string;
+	/** /1 only: this daemon's key seat; null for a /2 child (no key anywhere). */
+	sealKeyPath: string | null;
+	schema: typeof LAUNCHER_STAMP_SCHEMA | typeof LAUNCHER_STAMP_SCHEMA_V2;
 	/** One measured line for the host log. */
 	line: string;
 }
@@ -93,13 +109,31 @@ export function readLauncherStamp(file: string): LauncherStampDoc {
 		throw new Error(`${LAUNCHER_STAMP_ENV}=${file}: not JSON (${(error as Error).message})`);
 	}
 	const d = doc as Record<string, unknown>;
-	if (!d || typeof d !== "object" || d.schema !== LAUNCHER_STAMP_SCHEMA) {
-		throw new Error(`${LAUNCHER_STAMP_ENV}=${file}: schema is not ${JSON.stringify(LAUNCHER_STAMP_SCHEMA)}`);
+	if (!d || typeof d !== "object" || (d.schema !== LAUNCHER_STAMP_SCHEMA && d.schema !== LAUNCHER_STAMP_SCHEMA_V2)) {
+		throw new Error(
+			`${LAUNCHER_STAMP_ENV}=${file}: schema is not one of ${JSON.stringify([LAUNCHER_STAMP_SCHEMA, LAUNCHER_STAMP_SCHEMA_V2])}`,
+		);
 	}
 	if (d.class !== "agent" && d.class !== "human") {
 		throw new Error(`${LAUNCHER_STAMP_ENV}=${file}: class ${JSON.stringify(d.class)} is not one of agent|human`);
 	}
 	if (typeof d.identity !== "string" || !d.identity.trim()) throw new Error(`${LAUNCHER_STAMP_ENV}=${file}: no identity`);
+	const scope = typeof d.scope === "string" ? d.scope.trim().replace(/\/+$/, "") : "";
+	if (d.schema === LAUNCHER_STAMP_SCHEMA_V2) {
+		if ("seal_key" in d) {
+			throw new Error(
+				`${LAUNCHER_STAMP_ENV}=${file}: a ${LAUNCHER_STAMP_SCHEMA_V2} stamp must not carry seal_key — a key in a stamp is a key every agent reads (the seal service holds it)`,
+			);
+		}
+		return {
+			schema: LAUNCHER_STAMP_SCHEMA_V2,
+			identity: d.identity.trim(),
+			class: d.class,
+			scope,
+			issued: typeof d.issued === "string" ? d.issued : "",
+			launcher: typeof d.launcher === "string" ? d.launcher : "",
+		};
+	}
 	const key = typeof d.seal_key === "string" ? d.seal_key.trim() : "";
 	if (!/^[0-9a-f]+$/i.test(key) || key.length < 32) throw new Error(`${LAUNCHER_STAMP_ENV}=${file}: seal_key must be >= 16 bytes of hex`);
 	return {
@@ -146,22 +180,45 @@ export function mintChildLauncherStamp(o: {
 	if (!/^[A-Za-z0-9._-]+$/.test(o.sessionId)) throw new Error(`child launcher stamp: refused — session id ${JSON.stringify(o.sessionId)} is not a file-safe key`);
 	const childName = (o.childName ?? "").trim() || o.sessionId;
 	const identity = `helper:${childName}@${parent.identity}`;
+	const issued = (o.now ?? (() => new Date()))().toISOString().replace(/\.\d{3}Z$/, "Z");
+	const file = join(launcherStampDir(o.stateDir), `${o.sessionId}.json`);
+	if (parent.schema === LAUNCHER_STAMP_SCHEMA_V2) {
+		// the child follows its parent: /2, NO key, and no daemon key file minted
+		const doc: LauncherStampDoc = {
+			schema: LAUNCHER_STAMP_SCHEMA_V2,
+			identity,
+			class: "agent",
+			scope: parent.scope,
+			issued,
+			launcher: LAUNCHER_STAMP_LAUNCHER,
+		};
+		writePrivate(file, `${JSON.stringify(doc, null, 1)}\n`);
+		return {
+			file,
+			identity,
+			scope: parent.scope,
+			sealKeyPath: null,
+			schema: LAUNCHER_STAMP_SCHEMA_V2,
+			line: `launcher stamp: minted ${file} for depth-${o.depth} child identity=${identity} class=agent scope=${parent.scope || "-"} launcher=${LAUNCHER_STAMP_LAUNCHER} (parent ${parent.identity} via ${o.parentStampFile}; ${LAUNCHER_STAMP_SCHEMA_V2} — NO key: the seal service holds it)`,
+		};
+	}
+	// TRANSITION: a /1 parent (a box not yet seated) — the /1 child, unchanged
 	const doc: LauncherStampDoc = {
 		schema: LAUNCHER_STAMP_SCHEMA,
 		identity,
 		class: "agent",
 		scope: parent.scope,
 		seal_key: daemonSealKeyHex(o.stateDir),
-		issued: (o.now ?? (() => new Date()))().toISOString().replace(/\.\d{3}Z$/, "Z"),
+		issued,
 		launcher: LAUNCHER_STAMP_LAUNCHER,
 	};
-	const file = join(launcherStampDir(o.stateDir), `${o.sessionId}.json`);
 	writePrivate(file, `${JSON.stringify(doc, null, 1)}\n`);
 	return {
 		file,
 		identity,
 		scope: parent.scope,
 		sealKeyPath: launcherSealKeyPath(o.stateDir),
+		schema: LAUNCHER_STAMP_SCHEMA,
 		line: `launcher stamp: minted ${file} for depth-${o.depth} child identity=${identity} class=agent scope=${parent.scope || "-"} launcher=${LAUNCHER_STAMP_LAUNCHER} (parent ${parent.identity} via ${o.parentStampFile}; seal key ${launcherSealKeyPath(o.stateDir)}, this daemon's, not the parent launcher's)`,
 	};
 }
